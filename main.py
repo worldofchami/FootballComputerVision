@@ -8,6 +8,9 @@ import numpy as np
 import umap
 from sklearn.cluster import KMeans
 from sports.common.team import TeamClassifier
+from sports.configs.soccer import SoccerPitchConfiguration
+from sports.annotators.soccer import draw_pitch, draw_points_on_pitch
+import pitch
 
 # REDUCER = umap.UMAP(n_components=3)
 # CLUSTERING_MODEL = KMeans(n_clusters=2)
@@ -18,7 +21,6 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 # EMBEDDINGS_MODEL = SiglipVisionModel.from_pretrained(SIGLIP_MODEL_PATH).to(DEVICE)
 # EMBEDDINGS_PROCESSOR = AutoProcessor.from_pretrained(SIGLIP_MODEL_PATH)
 
-PITCH_DETECTION_MODEL = YOLO("./models/pitch-detection.pt")
 PLAYER_DETECTION_MODEL = YOLO("./models/player-detection.pt")
 
 BALL_ID = 0
@@ -28,6 +30,8 @@ REFEREE_ID = 3
 
 SOURCE_VIDEO_PATH = "./content/121364_0.mp4"
 TARGET_VIDEO_PATH = "./output/clip_1.mp4"
+
+CONFIG = SoccerPitchConfiguration()
 
 ellipse_annotator = sv.EllipseAnnotator(
     color=sv.Color.from_hex("#FFD700"),
@@ -183,6 +187,102 @@ annotated_frame = label_annotator.annotate(
     labels=labels
 )
 
-sv.plot_image(annotated_frame)
+# sv.plot_image(annotated_frame)
 
 # video_sink.write_frame(annotated_frame)
+
+"""Pitch detection"""
+
+PITCH_DETECTION_MODEL = YOLO("./models/pitch-detection.pt")
+
+vertex_annotator = sv.VertexAnnotator(
+    color=sv.Color.from_hex("#FF1494"),
+    radius=8
+)
+
+edge_annotator = sv.EdgeAnnotator(
+    color=sv.Color.from_hex("#FFFFFF"),
+    thickness=2,
+    edges=CONFIG.edges
+)
+
+result = PITCH_DETECTION_MODEL(frame, conf=0.3)[0]
+key_points = sv.KeyPoints.from_ultralytics(result)
+
+filter = key_points.confidence[0] > 0.5
+frame_ref_pts = key_points.xy[0][filter]
+
+frame_ref_key_pts = sv.KeyPoints(xy=frame_ref_pts[np.newaxis, ...])
+
+pitch_ref_pts = np.array(CONFIG.vertices)[filter]
+
+"""Project onto pitch"""
+# view_transformer = pitch.ViewTransformer(
+#     source=pitch_ref_pts,
+#     target=frame_ref_pts
+# )
+
+# pitch_all_pts = np.array(CONFIG.vertices)
+# frame_all_pts = view_transformer.transform_pts(pitch_all_pts)
+# frame_all_key_pts = sv.KeyPoints(xy=frame_all_pts[np.newaxis, ...])
+
+# annotated_frame = frame.copy()
+# annotated_frame = edge_annotator.annotate(annotated_frame, frame_all_key_pts)
+# annotated_frame = vertex_annotator.annotate(annotated_frame, frame_ref_key_pts)
+
+# annotated_frame = draw_pitch(CONFIG)
+
+
+"""Project onto 2D plane"""
+view_transformer = pitch.ViewTransformer(
+    source=frame_ref_pts,
+    target=pitch_ref_pts
+)
+
+frame_ball_xy = ball_detections.get_anchors_coordinates(sv.Position.BOTTOM_CENTER)
+pitch_ball_xy = view_transformer.transform_pts(frame_ball_xy )
+
+frame_players_xy = player_detections.get_anchors_coordinates(sv.Position.BOTTOM_CENTER)
+pitch_players_xy = view_transformer.transform_pts(frame_players_xy)
+
+frame_referee_xy = referee_detections.get_anchors_coordinates(sv.Position.BOTTOM_CENTER)
+pitch_referee_xy = view_transformer.transform_pts(frame_referee_xy)
+
+pitch = draw_pitch(config=CONFIG)
+pitch = draw_points_on_pitch(
+    config=CONFIG,
+    xy=pitch_ball_xy,
+    face_color=sv.Color.WHITE,
+    edge_color=sv.Color.BLACK,
+    radius=10,
+    pitch=pitch
+)
+
+pitch = draw_points_on_pitch(
+    config=CONFIG,
+    xy=pitch_players_xy[player_detections.class_id == 0],
+    face_color=sv.Color.from_hex("#FF00FF"),
+    edge_color=sv.Color.BLACK,
+    radius=20,
+    pitch=pitch
+)
+
+pitch = draw_points_on_pitch(
+    config=CONFIG,
+    xy=pitch_players_xy[player_detections.class_id == 2],
+    face_color=sv.Color.RED,
+    edge_color=sv.Color.BLACK,
+    radius=20,
+    pitch=pitch
+)
+
+pitch = draw_points_on_pitch(
+    config=CONFIG,
+    xy=pitch_referee_xy,
+    face_color=sv.Color.YELLOW,
+    edge_color=sv.Color.BLACK,
+    radius=20,
+    pitch=pitch
+)
+
+sv.plot_image(pitch)
